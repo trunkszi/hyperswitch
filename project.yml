@@ -1,0 +1,91 @@
+name: HyperSwitch
+
+options:
+  bundleIdPrefix: com.hyperswitch
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  developmentLanguage: en
+
+# Both languages must be declared here or Xcode will not compile the zh-Hans entries
+# out of Localizable.xcstrings into a zh-Hans.lproj, and the app ships English-only
+# with no warning.
+knownRegions:
+  - en
+  - zh-Hans
+  - Base
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # With MainActor default isolation, every AX/CG value type that is touched off-main
+    # must be marked `nonisolated` (SE-0449).
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Signing is done by scripts/build.sh after the build, not here: it picks the local
+    # certificate from scripts/setup-signing.sh when present so TCC grants survive a
+    # rebuild, and falls back to ad-hoc. Never import an identity interactively —
+    # a modal SecurityAgent prompt can lock the screen.
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_REQUIRED: YES
+    CODE_SIGNING_ALLOWED: YES
+    ENABLE_HARDENED_RUNTIME: YES
+    DEAD_CODE_STRIPPING: YES
+    ONLY_ACTIVE_ARCH: NO
+    ARCHS: arm64
+
+targets:
+  HyperSwitch:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/HyperSwitch
+        excludes:
+          - "Resources/Info.plist"
+          - "Resources/HyperSwitch.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hyperswitch.HyperSwitch
+        PRODUCT_NAME: HyperSwitch
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: Sources/HyperSwitch/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/HyperSwitch/Resources/HyperSwitch.entitlements
+        # App Sandbox MUST stay off: sandboxed processes cannot call
+        # AXUIElementCopyAttributeValue against other applications.
+        ENABLE_APP_SANDBOX: NO
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+          # get-task-allow, so a debugger can attach. It must not survive into a build
+          # anyone else runs — and notarisation rejects it outright.
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: YES
+        Release:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+          ENABLE_CODE_COVERAGE: NO
+          ENABLE_DEBUG_DYLIB: NO
+          SWIFT_COMPILATION_MODE: wholemodule
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+    dependencies:
+      - sdk: AppKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: ScreenCaptureKit.framework
+      - sdk: ApplicationServices.framework
+      - sdk: CoreGraphics.framework
+      - sdk: ServiceManagement.framework
+
+  HyperSwitchTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/HyperSwitchTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hyperswitch.HyperSwitchTests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: HyperSwitch

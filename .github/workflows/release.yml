@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: release-main
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode.app ]; then
+            sudo xcode-select -s /Applications/Xcode.app
+          else
+            latest=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+            if [ -z "$latest" ]; then
+              echo "No Xcode 26 found on runner"
+              exit 1
+            fi
+            sudo xcode-select -s "$latest"
+          fi
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          curl -fsSL -o /tmp/xcodegen.zip \
+            https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip
+          rm -rf /tmp/xcodegen
+          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen
+          bin=$(find /tmp/xcodegen -type f -name xcodegen | head -1)
+          if [ -z "$bin" ]; then
+            echo "xcodegen binary not found in release archive"
+            find /tmp/xcodegen -maxdepth 3 -print
+            exit 1
+          fi
+          mkdir -p "$HOME/.local/bin"
+          install -m 755 "$bin" "$HOME/.local/bin/xcodegen"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/xcodegen" --version
+
+      - name: Build Release DMG
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/release.sh
+
+      - name: Resolve version and tag
+        id: meta
+        run: |
+          VERSION=$(grep 'MARKETING_VERSION:' project.yml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          TAG="v${VERSION}-${{ github.run_number }}+${SHORT_SHA}"
+          {
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
+            echo "title=HyperSwitch v${VERSION} (${SHORT_SHA})"
+          } >> "$GITHUB_OUTPUT"
+          ls -lh dist/HyperSwitch.dmg
+          echo "Release tag: ${TAG}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.title }}
+          files: dist/HyperSwitch.dmg
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            Automated Release build from `main`.
+
+            | | |
+            |---|---|
+            | **Version** | ${{ steps.meta.outputs.version }} |
+            | **Commit** | ${{ github.sha }} |
+            | **Artifact** | `HyperSwitch.dmg` |
+
+            > Built on GitHub-hosted macOS with ad-hoc signing unless a Developer ID
+            > identity is available on the runner. Recipients may need to clear quarantine:
+            > `xattr -d com.apple.quarantine /path/to/HyperSwitch.dmg`
