@@ -16,6 +16,19 @@ HyperSwitch 是菜单栏代理（agent）应用：默认不占用 Dock，后台�
 
 ---
 
+## 界面截图
+
+所有设置页均提供英语与简体中文两种界面。界面语言可在 **设置 → 通用 → 语言** 中切换。
+
+| | English | 简体中文 |
+|---|---|---|
+| **通用** —— 窗口切换器快捷键、延迟、包含范围 | ![General](images/settings-general-en.png) | ![通用](images/settings-general-zh.png) |
+| **应用切换器** —— ⌘ Tab 预览与延迟 | ![App Switcher](images/settings-app-switcher-en.png) | ![应用切换器](images/settings-app-switcher-zh.png) |
+| **操作体验** | ![Interaction](images/settings-interaction-en.png) | ![操作体验](images/settings-interaction-zh.png) |
+| **外观** | ![Appearance](images/settings-appearance-en.png) | ![外观](images/settings-appearance-zh.png) |
+
+---
+
 ## 功能
 
 ### 应用与窗口切换
@@ -161,6 +174,14 @@ scripts/write-translations.py       # 按表重写 Localizable.xcstrings
 1. 从菜单栏图标退出 HyperSwitch。
 2. `rm -rf /Applications/HyperSwitch.app`
 3. 可选：`defaults delete com.hyperswitch.HyperSwitch 2>/dev/null || true`
+
+---
+
+## 相关项目
+
+- **[HyperDock](https://github.com/trunkszi/hyperdock)** —— 将指针悬停在 Dock 图标上，即可预览该应用的所有窗口（包括已最小化、以及位于其他桌面的窗口），点击直达目标窗口。
+
+两者构建方式一致——同为菜单栏代理应用，使用相同的「辅助功能 / 屏幕录制」权限，同样提供英语与简体中文界面——且定位互补：HyperSwitch 用键盘抵达窗口，HyperDock 用指针从 Dock 抵达窗口。两者可同时运行，互不冲突。
 
 ---
 
