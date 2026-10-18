@@ -204,26 +204,55 @@ enum WindowActions {
             [.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
         else { return true }
 
+        let spaces = WindowIndex.buildSpaceMap()
         return raw.contains { entry in
-            guard (entry[kCGWindowOwnerPID as String] as? pid_t) == pid,
-                  (entry[kCGWindowLayer as String] as? Int) == 0,
-                  let bounds = entry[kCGWindowBounds as String] as? [String: CGFloat]
-            else { return false }
-
-            // Layer 0 alone is not enough, which is what made this answer "yes" for an
-            // application with no windows at all. Measured against Finder with every
-            // window closed: it still owns five layer-0 windows — one 64×64 and four
-            // 2056×39 — none of which is a document. AppKit gives ordinary applications
-            // these too. So the same floor `WindowIndex` uses to tell a window from a
-            // palette or a stray strip applies here.
-            return (bounds["Width"] ?? 0) >= Self.minimumWindowSize.width
-                && (bounds["Height"] ?? 0) >= Self.minimumWindowSize.height
+            countsAsWindow(entry, of: pid) { spaces.placement(of: $0).isInAnySpace }
         }
+    }
+
+    /// Whether one window-list entry is a window the user has, for ``hasWindows(pid:)``.
+    ///
+    /// Split out so the rule can be tested against plain dictionaries; everything around
+    /// it needs a live window server.
+    nonisolated static func countsAsWindow(_ entry: [String: Any],
+                                           of pid: pid_t,
+                                           isInAnySpace: (CGWindowID) -> Bool) -> Bool {
+        guard (entry[kCGWindowOwnerPID as String] as? pid_t) == pid,
+              (entry[kCGWindowLayer as String] as? Int) == 0,
+              let id = entry[kCGWindowNumber as String] as? CGWindowID,
+              let bounds = entry[kCGWindowBounds as String] as? [String: CGFloat]
+        else { return false }
+
+        // Layer 0 alone is not enough, which is what made this answer "yes" for an
+        // application with no windows at all. Measured against Finder with every
+        // window closed: it still owns five layer-0 windows — one 64×64 and four
+        // 2056×39 — none of which is a document. AppKit gives ordinary applications
+        // these too. So the same floor `WindowIndex` uses to tell a window from a
+        // palette or a stray strip applies here.
+        guard (bounds["Width"] ?? 0) >= minimumWindowSize.width,
+              (bounds["Height"] ?? 0) >= minimumWindowSize.height
+        else { return false }
+
+        // The size floor is not enough either. Applications keep windows they built and
+        // never ordered in — measured on this machine, a 500×500 layer-0 window that
+        // survives with no window open at all, which is comfortably above the floor and
+        // made every such application look like it already had one, so "open a window
+        // when the app has none" never fired. `WindowIndex` throws the same windows out
+        // of the switcher with this same test: off screen *and* claimed by no Space is a
+        // window nobody can see or reach. A minimised window, or one on another desktop,
+        // still belongs to a Space and still counts.
+        let onScreen = entry[kCGWindowIsOnscreen as String] as? Bool ?? false
+        guard onScreen || isInAnySpace(id) else { return false }
+
+        // Fully transparent is the other shape of the same thing: present, sized, and
+        // invisible by construction.
+        if let alpha = entry[kCGWindowAlpha as String] as? Double, alpha <= 0 { return false }
+        return true
     }
 
     /// The smallest thing a person would call a window. Shared with `WindowIndex`'s own
     /// filter so "the switcher shows it" and "the app has one" can never disagree.
-    private static let minimumWindowSize = CGSize(width: 80, height: 60)
+    private nonisolated static let minimumWindowSize = CGSize(width: 80, height: 60)
 
     private static func postKey(keyCode: CGKeyCode, flags: CGEventFlags, to pid: pid_t) {
         guard let source = CGEventSource(stateID: .hidSystemState) else { return }

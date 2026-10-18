@@ -167,6 +167,75 @@ nonisolated final class InteractionFeaturesTests: XCTestCase {
         XCTAssertFalse(state.isSearching)
     }
 
+    /// Escape inside an explicitly opened, still-empty search backs out of the search,
+    /// not out of the whole session.
+    func testEscapeInAnEmptySearchOnlyLeavesTheSearch() {
+        var state = SwitcherInteractionState()
+        XCTAssertTrue(state.toggleLatch(allowed: true))
+        XCTAssertTrue(state.beginSearch(candidateCount: 1, threshold: 9, explicit: true))
+
+        XCTAssertEqual(state.escape(), .clearedSearch)
+        XCTAssertFalse(state.isSearching)
+        XCTAssertTrue(state.isLatched)
+        XCTAssertEqual(state.escape(), .cancelSession)
+    }
+
+    /// Tab, Return and Escape arrive with text attached. None of it may open search: a
+    /// silently opened search is what stopped Space unlatching and Return committing.
+    func testControlAndFunctionKeyTextNeverOpensSearch() {
+        var state = SwitcherInteractionState()
+        XCTAssertTrue(state.toggleLatch(allowed: true))
+
+        for text in ["\t", "\r", "\u{1B}", "\u{7F}", "\u{F702}", "\u{F700}"] {
+            XCTAssertFalse(state.appendSearchText(text, candidateCount: 50, threshold: 9),
+                           "\(text.unicodeScalars.map(\.value))")
+            XCTAssertFalse(state.isSearching)
+            XCTAssertEqual(state.query, "")
+        }
+
+        XCTAssertTrue(state.appendSearchText("a", candidateCount: 50, threshold: 9))
+        XCTAssertEqual(state.query, "a")
+    }
+
+    /// Movement repeats; decisions do not. Holding Q used to answer its own quit
+    /// confirmation, holding Space flipped the latch, holding W closed window after window.
+    func testOnlyMovementAndSearchTypingRepeat() {
+        let cycle = Int(KeyCodes.graveAccent)
+        for key in [KeyCodes.tab, KeyCodes.leftArrow, KeyCodes.rightArrow,
+                    KeyCodes.upArrow, KeyCodes.downArrow, KeyCodes.graveAccent] {
+            XCTAssertTrue(SessionKeyRepeat.honours(keyCode: key, cycleKey: cycle,
+                                                   isSearching: false), "\(key)")
+        }
+        for key in [KeyCodes.q, KeyCodes.w, KeyCodes.space, KeyCodes.escape,
+                    KeyCodes.returnKey, KeyCodes.slash, KeyCodes.delete] {
+            XCTAssertFalse(SessionKeyRepeat.honours(keyCode: key, cycleKey: cycle,
+                                                    isSearching: false), "\(key)")
+        }
+
+        // Typing into the search field repeats like any other text field…
+        XCTAssertTrue(SessionKeyRepeat.honours(keyCode: KeyCodes.q, cycleKey: cycle,
+                                               isSearching: true))
+        XCTAssertTrue(SessionKeyRepeat.honours(keyCode: KeyCodes.delete, cycleKey: cycle,
+                                               isSearching: true))
+        // …but Escape still backs out one level per press.
+        XCTAssertFalse(SessionKeyRepeat.honours(keyCode: KeyCodes.escape, cycleKey: cycle,
+                                                isSearching: true))
+
+        // A cycle key bound to W steps, so its repeats are movement too.
+        XCTAssertTrue(SessionKeyRepeat.honours(keyCode: KeyCodes.w, cycleKey: Int(KeyCodes.w),
+                                               isSearching: false))
+    }
+
+    func testEscapeSpaceAndReturnCannotBeTheCycleKey() {
+        XCTAssertFalse(KeyCodes.isUsableAsCycleKey(Int(KeyCodes.escape)))
+        XCTAssertFalse(KeyCodes.isUsableAsCycleKey(Int(KeyCodes.space)))
+        XCTAssertFalse(KeyCodes.isUsableAsCycleKey(Int(KeyCodes.returnKey)))
+        XCTAssertTrue(KeyCodes.isUsableAsCycleKey(Int(KeyCodes.graveAccent)))
+        XCTAssertTrue(KeyCodes.isUsableAsCycleKey(Int(KeyCodes.w)))
+        XCTAssertFalse(KeyCodes.selectable.contains { !KeyCodes.isUsableAsCycleKey(Int($0.code)) },
+                       "the picker must not offer a key the switcher cannot use")
+    }
+
     func testPermissionLaunchPolicyNeverPromptsAndSuppressesTestUI() {
         XCTAssertEqual(
             PermissionLaunchPolicy.action(

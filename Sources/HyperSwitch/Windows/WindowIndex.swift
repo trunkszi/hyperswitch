@@ -279,9 +279,8 @@ actor WindowIndex {
             guard query.matchesScreen(frame) else { return nil }
 
             let applicationName = entry[kCGWindowOwnerName as String] as? String ?? ""
-            // kCGWindowName is empty without Screen Recording, so prefer the title the
-            // ScreenCaptureKit listing gave us and fall back to this one.
-            let title = titles[id] ?? (entry[kCGWindowName as String] as? String ?? "")
+            let title = Self.title(live: entry[kCGWindowName as String] as? String,
+                                   cached: titles[id])
 
             // Without a title this is usually a helper surface — but only drop it when we
             // actually had titles to consult, or a missing Screen Recording grant would
@@ -364,6 +363,23 @@ actor WindowIndex {
         return await Self.dropClosedWindows(from: results)
     }
 
+    /// The title to show for a window: the window server's, unless it has none.
+    ///
+    /// The order used to be the other way round, and that put a stale title on the card.
+    /// `kCGWindowName` is read in the same `CGWindowListCopyWindowInfo` call as everything
+    /// else, so it is as current as the query; the ScreenCaptureKit table is a snapshot up
+    /// to two seconds old — longer while its listing is backing off. Switch a browser tab
+    /// or a Finder folder and press ⌥Tab, and the card still named the page that was there
+    /// a moment ago, which in a row of same-application windows is the only thing telling
+    /// them apart.
+    ///
+    /// The table still earns its place: without Screen Recording `kCGWindowName` is empty
+    /// for every window but our own, and the cached title is then the only one there is.
+    nonisolated static func title(live: String?, cached: String?) -> String {
+        if let live, !live.isEmpty { return live }
+        return cached ?? ""
+    }
+
     /// Confirms, retracts and expires the provisional close records.
     ///
     /// Runs before the suppression list is applied, so a window that turned out *not* to
@@ -427,9 +443,10 @@ actor WindowIndex {
     /// case. Guarding only against an outright unreadable list (`!ids.isEmpty`), as this
     /// did before, therefore deleted real minimised windows as soon as "include minimised
     /// windows" was switched on: one vended id was enough to condemn six real ones. So an
-    /// application's answer is used only when it accounts for at least as many windows as
-    /// there are doubts about it; a shorter answer is evidence of nothing and is dropped,
-    /// leaving its windows in place.
+    /// application's answer is used only when it is demonstrably complete — see
+    /// ``ClosedWindowEvidence`` for what that means and why a plain count was not enough —
+    /// and an answer that is not is evidence of nothing and is dropped, leaving its
+    /// windows in place.
     ///
     /// The other guard still holds: only windows already believed to be on the current
     /// Space are ever judged, so `kAXWindowsAttribute`'s Space filtering cannot make an
@@ -437,16 +454,24 @@ actor WindowIndex {
     private nonisolated static func dropClosedWindows(
         from windows: [WindowInfo]
     ) async -> [WindowInfo] {
-        var suspectCounts: [pid_t: Int] = [:]
-        for window in windows where !window.isOnScreen && window.isOnCurrentSpace {
-            suspectCounts[window.pid, default: 0] += 1
+        var suspects: [pid_t: Set<CGWindowID>] = [:]
+        var visible: [pid_t: Set<CGWindowID>] = [:]
+        for window in windows where window.isOnCurrentSpace {
+            if window.isOnScreen {
+                visible[window.pid, default: []].insert(window.id)
+            } else {
+                suspects[window.pid, default: []].insert(window.id)
+            }
         }
-        guard !suspectCounts.isEmpty else { return windows }
+        guard !suspects.isEmpty else { return windows }
 
         var live: [pid_t: Set<CGWindowID>] = [:]
-        for (pid, suspects) in suspectCounts {
+        for (pid, doubted) in suspects {
             guard let ids = await AXCore.shared.liveWindowIDs(pid: pid),
-                  ids.count >= suspects else { continue }
+                  ClosedWindowEvidence.isTrustworthy(vended: ids,
+                                                     visible: visible[pid] ?? [],
+                                                     suspects: doubted)
+            else { continue }
             live[pid] = ids
         }
         guard !live.isEmpty else { return windows }
@@ -587,5 +612,37 @@ actor WindowIndex {
 
         return SpaceMap(windowToNumber: numbers, currentSpaceWindows: current,
                         anySpaceWindows: everywhere, available: true)
+    }
+}
+
+/// When an application's Accessibility window list can be believed about what it omits.
+///
+/// ``WindowIndex``'s closed-window filter deletes every doubted window — current Space,
+/// not on screen — that this list does not contain, so the question is never "what did it
+/// vend" but "would it have vended a real minimised window if there were one".
+///
+/// The rule this replaced compared the *whole* answer's size with the number of doubts,
+/// which mixes two populations. The visible windows are in that count too, and they say
+/// nothing about minimised ones: an application with three windows on screen and two
+/// minimised that vends only the three it is showing passed `3 >= 2`, and both real
+/// minimised windows were deleted the moment "include minimised windows" was switched on.
+///
+/// What the answer has to show instead, both of it:
+///
+///   * **every visible window** — an answer that already misses a window the user can
+///     see is a partial one, and partial answers are the norm on this machine;
+///   * **at least one of the doubted windows** — the only proof available that this
+///     application reports off-screen windows at all. Without it, "not listed" cannot be
+///     told apart from "never listed", and only the first means closed.
+///
+/// The cost is deliberate and one-sided: a closed window whose application has nothing
+/// else minimised keeps its tile until the window server forgets it. That is a tile that
+/// activates its application when chosen; the alternative was deleting windows the user
+/// still has, which no amount of choosing gets back.
+nonisolated enum ClosedWindowEvidence {
+    static func isTrustworthy(vended: Set<CGWindowID>,
+                              visible: Set<CGWindowID>,
+                              suspects: Set<CGWindowID>) -> Bool {
+        visible.isSubset(of: vended) && !vended.isDisjoint(with: suspects)
     }
 }

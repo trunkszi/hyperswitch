@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKeys: HotKeyMonitor?
     private var permissionObserver: (any NSObjectProtocol)?
 
+    /// Held for the life of the process; a dispatch source that is released is cancelled.
+    private var terminationSignals: [any DispatchSourceSignal] = []
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Bounds every Accessibility request for the lifetime of the process before any
         // AX call can be made. Only the system-wide element sets a real process default,
@@ -32,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // shortcut back, and the user is left with a ⌘Tab that does nothing and no running
         // app to connect it to. This is the only thing that notices.
         SystemHotKeys.restoreAfterUnexpectedExit()
+        installTerminationSignalHandlers()
 
         // The event tap reads its policy from a snapshot on its own thread, so the initial
         // values have to be pushed before the tap can see its first keystroke. Without this
@@ -85,6 +89,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) == .showIntroduction {
             preferences.hasShownPermissionIntroduction = true
             SettingsWindowController.shared.show(selecting: .about)
+        }
+    }
+
+    /// Turns the polite ways of killing a process into an ordinary quit.
+    ///
+    /// `kill`, `killall`, `pkill`, a `launchctl` stop, logging out with the app wedged —
+    /// all of them send SIGTERM (or SIGINT/SIGHUP from a terminal), and the default action
+    /// for all three is to exit on the spot. `applicationWillTerminate` never runs, so the
+    /// system ⌘Tab this app switched off stays off: the user is left with a dead shortcut
+    /// and nothing running that could explain it, until HyperSwitch happens to be launched
+    /// again and ``SystemHotKeys/restoreAfterUnexpectedExit()`` notices. A rebuild script
+    /// that `pkill`s the old copy hits this every single time.
+    ///
+    /// Ignoring the default action and observing the signal through a dispatch source
+    /// routes it into `NSApp.terminate`, which is the same teardown ⌘Q gets — including
+    /// stopping the health check *before* the shortcut is handed back, so it cannot take
+    /// it again in between. On the main queue, because that teardown is main-actor work.
+    /// SIGKILL cannot be caught by anyone; the launch-time restore remains for that.
+    private func installTerminationSignalHandlers() {
+        for number in [SIGTERM, SIGINT, SIGHUP] {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
+            source.setEventHandler {
+                MainActor.assumeIsolated {
+                    Log.app.debug("received signal \(number); quitting cleanly")
+                    NSApp.terminate(nil)
+                }
+            }
+            source.resume()
+            terminationSignals.append(source)
         }
     }
 

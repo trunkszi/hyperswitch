@@ -218,8 +218,7 @@ final class Preferences {
             windowSwitcherEnabled: bool("windowSwitcherEnabled", default: true),
             windowSwitcherModifier: modifiers("windowSwitcherModifier", default: .option),
             currentAppSwitcherEnabled: bool("currentAppSwitcherEnabled", default: true),
-            currentAppSwitcherKeyCode: int("currentAppSwitcherKeyCode",
-                                           default: Int(KeyCodes.graveAccent)),
+            currentAppSwitcherKeyCode: storedCycleKey,
             currentAppSwitcherModifier: modifiers("currentAppSwitcherModifier", default: .option),
             shiftCyclesBackwards: bool("shiftCyclesBackwards", default: false)
         )
@@ -288,8 +287,23 @@ final class Preferences {
     /// the original labelled `§ / \``, because on an ISO layout the same physical key
     /// carries `§`.
     var currentAppSwitcherKeyCode: Int {
-        get { observed { int("currentAppSwitcherKeyCode", default: Int(KeyCodes.graveAccent)) } }
-        set { write(newValue, "currentAppSwitcherKeyCode") }
+        get { observed { storedCycleKey } }
+        set {
+            // Refused at the door as well as on the way out, so a value that can never work
+            // is not written for some later reader to trip over.
+            guard KeyCodes.isUsableAsCycleKey(newValue) else { return }
+            write(newValue, "currentAppSwitcherKeyCode")
+        }
+    }
+
+    /// The stored cycle key, with one that cannot work replaced by the default.
+    ///
+    /// The picker used to offer Escape and Space, so either may already be on disk — see
+    /// ``KeyCodes/isUsableAsCycleKey(_:)``. Both readers go through here, the settings pane
+    /// and the tap's snapshot, so the two can never disagree about which key is bound.
+    private var storedCycleKey: Int {
+        let code = int("currentAppSwitcherKeyCode", default: Int(KeyCodes.graveAccent))
+        return KeyCodes.isUsableAsCycleKey(code) ? code : Int(KeyCodes.graveAccent)
     }
 
     /// Milliseconds the modifier must stay held before the panel appears. Releasing

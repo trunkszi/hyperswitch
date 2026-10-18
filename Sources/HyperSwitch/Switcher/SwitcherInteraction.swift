@@ -60,18 +60,36 @@ nonisolated struct SwitcherInteractionState: Sendable, Equatable {
                                    candidateCount: Int,
                                    threshold: Int) -> Bool {
         guard !text.isEmpty, isLatched else { return false }
+
+        // Filtered *before* search can begin, not after. Every key the controller has no
+        // other use for reaches here with whatever text the keyboard attached, and Tab,
+        // Return and Escape all carry one — `\t`, `\r`, `\u{1B}`. With the filter second,
+        // a latched Tab opened search, then found nothing printable and reported "not
+        // handled", leaving `isSearching` on with an empty query and no field on screen.
+        // From then on Space typed into a search nobody could see instead of unlatching,
+        // and ⌘Tab's Return no longer counted as a choice on the application row.
+        let printableScalars = text.unicodeScalars.filter(Self.isSearchable)
+        guard !printableScalars.isEmpty else { return false }
+
         if !isSearching,
            !beginSearch(candidateCount: candidateCount, threshold: threshold) {
             return false
         }
 
-        let printableScalars = text.unicodeScalars.filter {
-            !CharacterSet.controlCharacters.contains($0)
-        }
-        guard !printableScalars.isEmpty else { return false }
         let addition = String(String.UnicodeScalarView(printableScalars))
         query = String((query + addition).prefix(80))
         return true
+    }
+
+    /// Whether a scalar a key produced is something a person could mean to search for.
+    ///
+    /// Control characters are the obvious exclusion. The less obvious one is the block
+    /// AppKit reserves for function keys, U+F700–U+F8FF: the arrows, Home/End and the F
+    /// keys report their legends there (←  is U+F702), and none of them is a character
+    /// anything is titled with.
+    nonisolated static func isSearchable(_ scalar: Unicode.Scalar) -> Bool {
+        !CharacterSet.controlCharacters.contains(scalar)
+            && !(0xF700...0xF8FF).contains(scalar.value)
     }
 
     mutating func deleteSearchCharacter() {
@@ -80,14 +98,51 @@ nonisolated struct SwitcherInteractionState: Sendable, Equatable {
         if query.isEmpty { isSearching = false }
     }
 
+    /// Escape backs out one level: out of search if search is open, out of the session
+    /// otherwise.
+    ///
+    /// "Search is open" does not require anything to have been typed. `/` opens it
+    /// explicitly with an empty query, and the field is on screen from that moment; Escape
+    /// used to fall through to cancelling the whole session there, so the natural way to
+    /// change one's mind about searching threw away the selection as well.
     mutating func escape() -> SwitcherEscapeAction {
-        if isSearching, !query.isEmpty {
+        if isSearching {
             query = ""
             isSearching = false
             return .clearedSearch
         }
-        isSearching = false
         return .cancelSession
+    }
+}
+
+/// Which keys keep acting while they are held down.
+///
+/// A key held past the system's repeat delay arrives again and again — 225 ms, then every
+/// ~30 ms, on this machine — and the switcher used to treat each repeat as a fresh press.
+/// For a key that moves the selection that is the point. For the rest it was a fault: Q
+/// held for a quarter of a second answered its own "press Q again to quit" and terminated
+/// the application, Space flipped the latch on and off for as long as it was down, and W
+/// closed window after window down the row.
+///
+/// So repeats are honoured for movement, and for typing while search is open — a held
+/// letter in a search field repeats in every other text field too — and ignored for every
+/// key that decides something.
+nonisolated enum SessionKeyRepeat {
+    static func honours(keyCode: CGKeyCode, cycleKey: Int, isSearching: Bool) -> Bool {
+        switch keyCode {
+        case KeyCodes.tab, KeyCodes.leftArrow, KeyCodes.rightArrow,
+             KeyCodes.upArrow, KeyCodes.downArrow:
+            return true
+        case KeyCodes.escape, KeyCodes.returnKey:
+            // Escape backs out one level per press; held, it would back out of search and
+            // then out of the session the user meant to keep.
+            return false
+        default:
+            // The current-app key is a cycle key wherever it sits on the keyboard, W and Q
+            // included, so its repeats step like Tab's.
+            if Int(keyCode) == cycleKey { return true }
+            return isSearching
+        }
     }
 }
 
