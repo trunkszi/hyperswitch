@@ -8,7 +8,7 @@ HyperSwitch is a menu-bar (agent) app: no Dock tile of its own by default, runs 
 
 | | |
 |---|---|
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Platform** | macOS 26.0+, Apple Silicon (`arm64`) |
 | **Bundle ID** | `com.hyperswitch.HyperSwitch` |
 | **Languages** | English, Simplified Chinese |

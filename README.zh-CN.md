@@ -8,7 +8,7 @@ HyperSwitch 是菜单栏代理（agent）应用：默认不占用 Dock，后台�
 
 | | |
 |---|---|
-| **版本** | 1.0.0 |
+| **版本** | 1.0.1 |
 | **平台** | macOS 26.0+，Apple Silicon（`arm64`） |
 | **Bundle ID** | `com.hyperswitch.HyperSwitch` |
 | **界面语言** | 英语、简体中文 |
