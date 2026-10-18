@@ -48,13 +48,25 @@ enum KeyCodes {
     /// be offered without a legend — the two used to be one hand-written table, which is
     /// the kind of thing that ships a picker row reading `Key 42`.
     ///
-    /// The first five are the plausible defaults: the original HyperSwitch shipped with
+    /// The first three are the plausible defaults: the original HyperSwitch shipped with
     /// 50, and 10 is the same physical position reported by an ISO keyboard.
     nonisolated static let selectable: [(code: CGKeyCode, label: String)] =
         selectableOrder.map { (code: $0, label: label(for: $0)) }
 
+    /// Whether a key can serve as the current-app switcher's cycle key.
+    ///
+    /// Escape and Space were both offered and neither can do the job. The cycle key is the
+    /// one tapped *inside* a session to move along, and inside a session both already mean
+    /// something that is decided before the cycle key is ever consulted: Escape cancels,
+    /// Space latches. Bound to either, ⌥⎋ opened the switcher and the next ⎋ closed it,
+    /// so the binding could open a session but never step through one. Return is refused
+    /// for the same reason — it commits — though it was never in the list.
+    nonisolated static func isUsableAsCycleKey(_ code: Int) -> Bool {
+        code != Int(escape) && code != Int(space) && code != Int(returnKey)
+    }
+
     private nonisolated static let selectableOrder: [CGKeyCode] = [
-        50, 48, 10, 53, 49,
+        50, 48, 10,
         // F1–F12. Not consecutive, and not in numeric order: F5–F12 were added to the
         // keyboard after F1–F4, so their codes were assigned wherever there was room.
         122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111,

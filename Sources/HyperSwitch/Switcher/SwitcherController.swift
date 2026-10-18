@@ -176,6 +176,26 @@ final class SwitcherController {
 
     private var spaceObserver: (any NSObjectProtocol)?
 
+    /// Watches for a click anywhere outside the panel while the session is latched.
+    ///
+    /// A latched session has, by design, no modifier whose release can end it, and the
+    /// event tap goes on swallowing every key for as long as it is open. Its exits were
+    /// Escape, Return, a Space change and the 60 s idle backstop — none of which is what
+    /// a person does when they simply walk away from the panel and click into another
+    /// application, or into the Dock. The panel then sat there and ate everything they
+    /// typed for up to a minute.
+    ///
+    /// A global monitor is exactly the right shape: it is told about events bound for
+    /// *other* processes only, so a click on one of our own cards — which is how the
+    /// pointer picks a window — never reaches it. Only while latched, because an unlatched
+    /// session is held open by a modifier the user is pressing and ends when they let go.
+    ///
+    /// Clicks rather than activation changes: this app's own actions activate other
+    /// applications mid-session — the auto-activate preview, quitting the selected
+    /// application — and reacting to those would close the panel under the very key that
+    /// was meant to keep it open.
+    private var outsideClickMonitor: Any?
+
     private init() {
         // Mission Control and a Space switch both end the session outright rather than
         // committing it: we may have missed keystrokes in between, and raising a window
@@ -755,6 +775,7 @@ final class SwitcherController {
 
         let latched = interaction.toggleLatch(allowed: model.appearance.latchedModeEnabled)
         projectInteractionState()
+        if latched { watchForOutsideClicks() } else { stopWatchingOutsideClicks() }
         if latched, !hasPresented { present() }
         if !latched {
             let currentFlags = CGEventFlags(rawValue: UInt64(NSEvent.modifierFlags.rawValue))
@@ -765,6 +786,26 @@ final class SwitcherController {
         }
         relayout()
         return latched
+    }
+
+    private func watchForOutsideClicks() {
+        guard outsideClickMonitor == nil else { return }
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { _ in
+            MainActor.assumeIsolated {
+                let controller = SwitcherController.shared
+                guard controller.isActive, controller.isLatched else { return }
+                Log.switcher.debug("clicked outside a latched panel; cancelling")
+                controller.cancel()
+            }
+        }
+    }
+
+    private func stopWatchingOutsideClicks() {
+        guard let outsideClickMonitor else { return }
+        NSEvent.removeMonitor(outsideClickMonitor)
+        self.outsideClickMonitor = nil
     }
 
     /// Printable text is meaningful only after the session has been pinned.
@@ -1052,8 +1093,8 @@ final class SwitcherController {
         case .begin(let mode, let modifier, let backwards):
             begin(mode: mode, modifier: modifier, backwards: backwards)
 
-        case .sessionKey(let keyCode, let flags, let text):
-            handleSessionKey(keyCode, flags: flags, text: text)
+        case .sessionKey(let keyCode, let flags, let text, let isRepeat):
+            handleSessionKey(keyCode, flags: flags, text: text, isRepeat: isRepeat)
 
         case .commitAndClearModifier(let modifier):
             commit()
@@ -1099,7 +1140,8 @@ final class SwitcherController {
     /// is the meaning, and that only ever affects our own panel.
     private func handleSessionKey(_ keyCode: CGKeyCode,
                                   flags: CGEventFlags,
-                                  text: String) {
+                                  text: String,
+                                  isRepeat: Bool) {
         // The session can have ended between the decision and this call — the watchdog
         // cancels, a Space change cancels, a commit may already have run. Acting anyway
         // would step a selection in a panel that is fading out.
@@ -1114,6 +1156,14 @@ final class SwitcherController {
         // in every session, including ⌥Tab and ⌘Tab ones, is a worse failure than losing
         // "close window" on one unusual binding.
         let cycleKey = Preferences.shared.currentAppSwitcherKeyCode
+
+        // Ahead of every branch below, so that what a key *does* when held is decided in
+        // one place rather than case by case. See ``SessionKeyRepeat``.
+        if isRepeat,
+           !SessionKeyRepeat.honours(keyCode: keyCode, cycleKey: cycleKey,
+                                     isSearching: isSearching) {
+            return
+        }
 
         if keyCode == KeyCodes.space, !isSearching {
             toggleLatch()
@@ -1160,8 +1210,13 @@ final class SwitcherController {
             // repeatedly walks the application's windows the way ⌥Tab walks all of them.
             // It is configurable, so it cannot be a literal case above — and when it *is*
             // W or Q the two cases above decline, leaving the step to this arm.
+            //
+            // Shift reverses it for the same reason it reverses Tab: inside a session ⇧ is
+            // the universal "go back". This arm used to step forwards unconditionally, so
+            // ⌥⇧` walked the same way as ⌥` — and with no shifted key that steps, a
+            // current-app session could only ever go round one way.
             if Int(keyCode) == cycleKey {
-                step(1)
+                step(flags.contains(.maskShift) ? -1 : 1)
             }
         }
     }
@@ -1444,6 +1499,7 @@ final class SwitcherController {
         // The anchor belongs to a session that is over; the next one starts listening to
         // the pointer again from wherever it happens to be.
         pointerAnchor = nil
+        stopWatchingOutsideClicks()
 
         showTask?.cancel(); showTask = nil
         loadTask?.cancel(); loadTask = nil

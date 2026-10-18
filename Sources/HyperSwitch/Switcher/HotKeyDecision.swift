@@ -52,7 +52,12 @@ nonisolated struct HotKeySnapshot: Sendable, Equatable {
 nonisolated enum HotKeyAction: Sendable, Equatable {
     case begin(mode: SwitcherMode, modifier: ModifierCombo, backwards: Bool)
     /// A key pressed while a session is open. The main actor owns what it means.
-    case sessionKey(keyCode: CGKeyCode, flags: CGEventFlags, text: String)
+    ///
+    /// `isRepeat` is the keyboard's own auto-repeat flag, carried rather than acted on
+    /// here: whether a held key should keep doing what it does depends on what it does,
+    /// which is the main actor's business. See ``SessionKeyRepeat``.
+    case sessionKey(keyCode: CGKeyCode, flags: CGEventFlags, text: String,
+                    isRepeat: Bool = false)
     /// The modifier that opened the session was released: commit, then tell the front
     /// application the modifier is no longer held.
     case commitAndClearModifier(ModifierCombo)
@@ -105,15 +110,26 @@ nonisolated enum HotKeyPolicy {
     /// is open — a genuinely dead keyboard, with no panel on screen to explain it.
     ///
     /// So the tap keeps its own clock. `SwitcherController`'s watchdog cancels an idle
-    /// session after 20 s and any session after 300 s; these are looser than both, because
+    /// session after 20 s and any session after 300 s; this is looser than both, because
     /// this is not a second watchdog — it is the thing that runs when the first one cannot.
-    private static let unlatchedSessionCeiling: TimeInterval = 30
-    private static let latchedSessionCeiling: TimeInterval = 300
+    ///
+    /// **One ceiling, not one per latch state.** An unlatched session used to get 30 s, and
+    /// that was tighter than the controller rather than looser: idle time is renewed by
+    /// every pointer move, so a person holding ⌥ and browsing the cards with the mouse was
+    /// cut off at 30 s by this side while the controller still considered the session
+    /// healthy — the panel faded under the pointer and the release committed nothing. The
+    /// shorter figure bought nothing either. An unlatched session cannot leave the
+    /// keyboard dead behind a wedged main actor, because the tap ends it on its own: the
+    /// modifier's release applies `.endSession` here, and a key arriving without that
+    /// modifier is passed through by ``sessionKey(keyCode:flags:text:isRepeat:state:)``.
+    ///
+    /// Ten seconds past the controller's 300 s so that, while the main actor is healthy,
+    /// its watchdog — which also takes the panel down — is always the one that ends it.
+    private static let sessionCeiling: TimeInterval = 310
 
     private static func sessionHasOutlivedItsWelcome(_ state: HotKeySnapshot) -> Bool {
         guard state.isActive, let opened = state.sessionOpenedAt else { return false }
-        let ceiling = state.isLatched ? latchedSessionCeiling : unlatchedSessionCeiling
-        return ProcessInfo.processInfo.systemUptime - opened > ceiling
+        return ProcessInfo.processInfo.systemUptime - opened > sessionCeiling
     }
 
     static func decide(type: CGEventType,
@@ -121,6 +137,7 @@ nonisolated enum HotKeyPolicy {
                        flags: CGEventFlags,
                        text: String,
                        timestamp: UInt64,
+                       isRepeat: Bool = false,
                        state: HotKeySnapshot) -> HotKeyDecision {
         // Ahead of everything, including the calibration branches: whatever this session
         // was for, nothing is coming to end it, and the keyboard has to be handed back.
@@ -140,8 +157,9 @@ nonisolated enum HotKeyPolicy {
                                       timestamp: timestamp, state: state)
             }
             return state.isActive
-                ? sessionKey(keyCode: keyCode, flags: flags, text: text, state: state)
-                : trigger(keyCode: keyCode, flags: flags, state: state)
+                ? sessionKey(keyCode: keyCode, flags: flags, text: text,
+                             isRepeat: isRepeat, state: state)
+                : trigger(keyCode: keyCode, flags: flags, isRepeat: isRepeat, state: state)
 
         default:
             return .pass
@@ -176,9 +194,25 @@ nonisolated enum HotKeyPolicy {
     // MARK: - Activation
 
     /// Matches a keystroke against the three configured hotkeys. Order is priority.
+    ///
+    /// A hotkey that is merely being *held* never opens a session. The case is ordinary:
+    /// hold ⌥Tab to scroll through the windows, press Escape with Tab still down, and the
+    /// next auto-repeated Tab arrives to a tap with no session — which read it as a fresh
+    /// ⌥Tab and put the panel straight back up. It is still swallowed, because it is the
+    /// tail of a keystroke that was ours, and letting it through would type a Tab into
+    /// whatever the user was looking at.
     private static func trigger(keyCode: CGKeyCode,
                                 flags: CGEventFlags,
+                                isRepeat: Bool,
                                 state: HotKeySnapshot) -> HotKeyDecision {
+        let decision = matchTrigger(keyCode: keyCode, flags: flags, state: state)
+        guard isRepeat, decision.action != nil else { return decision }
+        return HotKeyDecision(swallow: true, action: nil, edit: .none)
+    }
+
+    private static func matchTrigger(keyCode: CGKeyCode,
+                                     flags: CGEventFlags,
+                                     state: HotKeySnapshot) -> HotKeyDecision {
         // ⌘Tab is checked first and its modifier is hard-coded rather than read from
         // preferences, because it is not ours to configure — it is the system binding we
         // are displacing. The order matters for a real configuration, not a hypothetical
@@ -247,6 +281,7 @@ nonisolated enum HotKeyPolicy {
     private static func sessionKey(keyCode: CGKeyCode,
                                    flags: CGEventFlags,
                                    text: String,
+                                   isRepeat: Bool,
                                    state: HotKeySnapshot) -> HotKeyDecision {
         // Second line of defence behind the controller's watchdog. If the modifier that
         // opened this session is no longer in the incoming event's flags, the release went
@@ -286,7 +321,8 @@ nonisolated enum HotKeyPolicy {
 
         return HotKeyDecision(
             swallow: true,
-            action: .sessionKey(keyCode: keyCode, flags: flags, text: text)
+            action: .sessionKey(keyCode: keyCode, flags: flags, text: text,
+                                isRepeat: isRepeat)
         )
     }
 

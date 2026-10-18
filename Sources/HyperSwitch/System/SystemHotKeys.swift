@@ -67,11 +67,7 @@ nonisolated enum SystemHotKeys {
 
     /// The key combination a symbolic hotkey is bound to, so it can be posted.
     static func binding(for id: Int32) -> (key: CGKeyCode, flags: CGEventFlags)? {
-        guard let value = _hotKeyValue else { return nil }
-        var equivalent: unichar = 0
-        var virtualKey: unichar = 0
-        var modifiers: Int32 = 0
-        guard value(id, &equivalent, &virtualKey, &modifiers) == 0 else { return nil }
+        guard let (key, modifiers) = rawBinding(for: id) else { return nil }
 
         // Carbon modifier masks, the same ones `SystemShortcutReader` decodes.
         var flags = CGEventFlags()
@@ -79,7 +75,20 @@ nonisolated enum SystemHotKeys {
         if modifiers & 0x0004_0000 != 0 { flags.insert(.maskControl) }
         if modifiers & 0x0008_0000 != 0 { flags.insert(.maskAlternate) }
         if modifiers & 0x0010_0000 != 0 { flags.insert(.maskCommand) }
-        return (CGKeyCode(virtualKey), flags)
+        return (key, flags)
+    }
+
+    /// The binding as the table stores it, Carbon modifier mask and all.
+    ///
+    /// For readers that need the bits ``binding(for:)`` drops — the fn bit above all,
+    /// which macOS 26 uses for a whole family of shortcuts of its own.
+    static func rawBinding(for id: Int32) -> (key: CGKeyCode, carbonModifiers: Int32)? {
+        guard let value = _hotKeyValue else { return nil }
+        var equivalent: unichar = 0
+        var virtualKey: unichar = 0
+        var modifiers: Int32 = 0
+        guard value(id, &equivalent, &virtualKey, &modifiers) == 0 else { return nil }
+        return (CGKeyCode(virtualKey), modifiers)
     }
 
     static func isEnabled(_ id: Int32) -> Bool {
@@ -140,7 +149,13 @@ nonisolated enum SystemHotKeys {
         guard isEnabled(commandTab).boolValue != target
             || isEnabled(commandShiftTab).boolValue != target
         else {
-            defaults.set(suppressed, forKey: suppressedKey)
+            // This branch is the one the quarter-second health check takes almost every
+            // time, so the bookkeeping is held to the same "only when it differs" rule as
+            // the WindowServer write — an unconditional `set` here was four preference
+            // writes a second for the life of the process.
+            if defaults.bool(forKey: suppressedKey) != suppressed {
+                defaults.set(suppressed, forKey: suppressedKey)
+            }
             return
         }
 
@@ -161,11 +176,9 @@ nonisolated enum SystemHotKeys {
     /// had already turned ⌘Tab off themselves; handing them back a shortcut they had
     /// deliberately disabled would be its own small bug.
     static func restoreAfterUnexpectedExit() {
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: suppressedKey) else { return }
+        guard UserDefaults.standard.bool(forKey: suppressedKey) else { return }
         Log.hotkeys.error("previous run exited while holding the system ⌘Tab; restoring it")
-        let wasEnabled = defaults.object(forKey: wasEnabledKey) as? Bool ?? true
-        setSuppressed(!wasEnabled)
+        giveBack()
     }
 
     /// Gives the shortcut back. For termination and for revoked permissions.
@@ -177,9 +190,25 @@ nonisolated enum SystemHotKeys {
     /// and undoing a deliberate system setting it was never asked to touch. If we did not
     /// suppress it, it is not ours to restore.
     static func restore() {
+        guard UserDefaults.standard.bool(forKey: suppressedKey) else { return }
+        giveBack()
+    }
+
+    /// Returns the shortcut to its recorded state and gives up the claim on it.
+    ///
+    /// Both halves, separately. This used to be `setSuppressed(!wasEnabled)`, which is
+    /// right for the shortcut but wrong for the bookkeeping whenever the user had ⌘Tab
+    /// off before we arrived: "restore to off" *is* `setSuppressed(true)`, which records
+    /// the claim as still held. Every clean quit then looked like a crash to the next
+    /// launch, and `restoreAfterUnexpectedExit` logged an exit that never happened.
+    private static func giveBack() {
         let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: suppressedKey) else { return }
         let wasEnabled = defaults.object(forKey: wasEnabledKey) as? Bool ?? true
-        setSuppressed(!wasEnabled)
+        if wasEnabled {
+            setSuppressed(false)
+        }
+        // A user who had it off gets it back off, which is how we found it: there is
+        // nothing to write to the WindowServer, only the claim to drop.
+        defaults.set(false, forKey: suppressedKey)
     }
 }

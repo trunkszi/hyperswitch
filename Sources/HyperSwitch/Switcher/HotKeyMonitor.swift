@@ -192,8 +192,19 @@ final class HotKeyMonitor {
     /// the one that gets forgotten leaves either a dead ⌘Tab or a system switcher popping
     /// up over ours. One place that re-asserts the truth four times a second cannot be
     /// forgotten, and `setSuppressed` writes only when the state actually differs.
+    ///
+    /// The "not ours" half goes through `restore()`, never `setSuppressed(false)`. The
+    /// latter means "switch ⌘Tab on", and from here it ran four times a second whenever
+    /// previews were off — so a user who had turned the system shortcut off themselves had
+    /// it switched back on behind their back, and kept switched on however often they
+    /// turned it off again. `restore()` acts only on a suppression this app made, and
+    /// returns the shortcut to what it was before that.
     private func syncSystemHotKeys() {
-        SystemHotKeys.setSuppressed(Preferences.shared.appSwitcherPreviewsEnabled && tap.isEnabled)
+        if Preferences.shared.appSwitcherPreviewsEnabled && tap.isEnabled {
+            SystemHotKeys.setSuppressed(true)
+        } else {
+            SystemHotKeys.restore()
+        }
     }
 }
 
@@ -340,10 +351,17 @@ private nonisolated final class HotKeyTap: @unchecked Sendable {
         let flags = event.flags
         let text = type == .keyDown ? copiedKeyboardText(from: event) : ""
         let timestamp = event.timestamp
+        // Read here because only the event knows. A key held past the system's repeat delay
+        // (225 ms on this machine) arrives again every ~30 ms with this field set, and
+        // without it the main actor could not tell "pressed Q twice" from "held Q down" —
+        // which is all the quit confirmation has to go on.
+        let isRepeat = type == .keyDown
+            && event.getIntegerValueField(.keyboardEventAutorepeat) != 0
 
         let state = HotKeyState.shared
         let decision = HotKeyPolicy.decide(type: type, keyCode: keyCode, flags: flags,
                                            text: text, timestamp: timestamp,
+                                           isRepeat: isRepeat,
                                            state: state.current)
         // Applied before the action is dispatched, not after it runs: the next keystroke can
         // arrive before the main actor has even been scheduled. See `HotKeyStateEdit`.

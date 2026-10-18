@@ -205,7 +205,7 @@ nonisolated final class HotKeyPolicyTests: XCTestCase {
     /// keyboard back. Now nothing external will, so the policy has to.
     func testASessionNothingEverClosedStopsSwallowing() {
         var state = openSession(modifier: .option)
-        state.sessionOpenedAt = ProcessInfo.processInfo.systemUptime - 31
+        state.sessionOpenedAt = ProcessInfo.processInfo.systemUptime - 311
 
         let decision = decide(.keyDown, key: KeyCodes.tab, flags: [.maskAlternate],
                               state: state)
@@ -215,8 +215,21 @@ nonisolated final class HotKeyPolicyTests: XCTestCase {
         XCTAssertEqual(decision.edit, .endSession)
     }
 
-    /// A latched session is one the user is deliberately keeping open, so 30 s is far too
-    /// tight for it — it gets the controller's own absolute ceiling instead.
+    /// The backstop must be looser than the controller's watchdog, never tighter. An
+    /// unlatched session browsed with the mouse renews the controller's idle timer on every
+    /// move, and this side used to cut it off at 30 s regardless.
+    func testAnUnlatchedSessionIsNotCutShortOfTheControllersCeiling() {
+        var state = openSession(modifier: .option)
+        state.sessionOpenedAt = ProcessInfo.processInfo.systemUptime - 60
+
+        let decision = decide(.keyDown, key: KeyCodes.tab, flags: [.maskAlternate],
+                              state: state)
+
+        XCTAssertTrue(decision.swallow)
+        XCTAssertEqual(decision.action,
+                       .sessionKey(keyCode: KeyCodes.tab, flags: [.maskAlternate], text: ""))
+    }
+
     func testALatchedSessionIsGivenMuchLonger() {
         var state = openSession(modifier: .option)
         state.isLatched = true
@@ -237,6 +250,36 @@ nonisolated final class HotKeyPolicyTests: XCTestCase {
                               state: state)
 
         XCTAssertTrue(decision.swallow)
+    }
+
+    // MARK: - Auto-repeat
+
+    /// The repeat flag travels with the key so the main actor can tell a held key from a
+    /// pressed one; deciding what that means is not the tap's job.
+    func testARepeatedSessionKeyCarriesItsRepeatFlag() {
+        let decision = decide(.keyDown, key: KeyCodes.q, flags: [.maskAlternate],
+                              isRepeat: true, state: openSession(modifier: .option))
+
+        XCTAssertTrue(decision.swallow)
+        XCTAssertEqual(decision.action,
+                       .sessionKey(keyCode: KeyCodes.q, flags: [.maskAlternate], text: "",
+                                   isRepeat: true))
+    }
+
+    /// Hold ⌥Tab, press Escape with Tab still down: the repeats that follow must not open
+    /// the panel again, and must not reach the application underneath either.
+    func testAHeldHotkeyNeverOpensASession() {
+        let decision = decide(.keyDown, key: KeyCodes.tab, flags: [.maskAlternate],
+                              isRepeat: true, state: HotKeySnapshot())
+
+        XCTAssertTrue(decision.swallow)
+        XCTAssertNil(decision.action)
+        XCTAssertEqual(decision.edit, .none)
+    }
+
+    func testARepeatOfAKeyThatIsNotAHotkeyIsLeftAlone() {
+        XCTAssertEqual(decide(.keyDown, key: KeyCodes.q, flags: [], isRepeat: true,
+                              state: HotKeySnapshot()), .pass)
     }
 
     // MARK: - The optimistic edit
@@ -286,8 +329,10 @@ nonisolated final class HotKeyPolicyTests: XCTestCase {
                         flags: CGEventFlags,
                         text: String = "",
                         timestamp: UInt64 = 0,
+                        isRepeat: Bool = false,
                         state: HotKeySnapshot) -> HotKeyDecision {
         HotKeyPolicy.decide(type: type, keyCode: key, flags: flags,
-                            text: text, timestamp: timestamp, state: state)
+                            text: text, timestamp: timestamp, isRepeat: isRepeat,
+                            state: state)
     }
 }
