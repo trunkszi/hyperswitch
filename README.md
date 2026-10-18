@@ -16,6 +16,19 @@ HyperSwitch is a menu-bar (agent) app: no Dock tile of its own by default, runs 
 
 ---
 
+## Screenshots
+
+Every Settings pane is available in English and Simplified Chinese. Switch the interface language in **Settings → General → Language**.
+
+| | English | 简体中文 |
+|---|---|---|
+| **General** — window switcher hotkeys, delay, filters | ![General](images/settings-general-en.png) | ![通用](images/settings-general-zh.png) |
+| **App Switcher** — ⌘ Tab previews and delays | ![App Switcher](images/settings-app-switcher-en.png) | ![应用切换器](images/settings-app-switcher-zh.png) |
+| **Interaction** | ![Interaction](images/settings-interaction-en.png) | ![操作体验](images/settings-interaction-zh.png) |
+| **Appearance** | ![Appearance](images/settings-appearance-en.png) | ![外观](images/settings-appearance-zh.png) |
+
+---
+
 ## Features
 
 ### App & window switcher
@@ -161,6 +174,14 @@ scripts/write-translations.py       # rewrite Localizable.xcstrings from the tab
 1. Quit HyperSwitch from the menu-bar icon.
 2. `rm -rf /Applications/HyperSwitch.app`
 3. Optional: `defaults delete com.hyperswitch.HyperSwitch 2>/dev/null || true`
+
+---
+
+## Related projects
+
+- **[HyperDock](https://github.com/trunkszi/hyperdock)** — hover a Dock icon to preview every open window of that app, including minimized ones and windows on other Spaces, then click through to the one you want.
+
+The two are built the same way — menu-bar agent apps, the same Accessibility / Screen Recording permissions, the same English and Simplified Chinese interface — and they complement each other: HyperSwitch reaches your windows through the keyboard, HyperDock through the Dock with the pointer. Running both is fine; they do not conflict.
 
 ---
 
